@@ -35,7 +35,7 @@ const {
 const port = Number(process.env.PORT || 3000);
 const timeZone = process.env.APP_TIME_ZONE || "Asia/Ho_Chi_Minh";
 const corsOrigin =
-  process.env.CORS_ORIGIN || "https://fe-ot-worker.vercel.app/";
+  process.env.CORS_ORIGIN || "https://fe-ot-worker.vercel.app";
 
 function createDefaultProfile(username, authUserId = null) {
   return {
@@ -163,7 +163,7 @@ async function persistCurrentUserProfile(request, profile) {
 }
 
 async function handleRequest(request, response) {
-  const corsHeaders = buildCorsHeaders(corsOrigin);
+  const corsHeaders = buildCorsHeaders(corsOrigin, request.headers.origin);
 
   if (request.method === "OPTIONS") {
     response.writeHead(204, corsHeaders);

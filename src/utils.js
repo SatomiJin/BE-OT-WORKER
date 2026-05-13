@@ -96,11 +96,37 @@ function formatDateParts(date, timeZone = DEFAULT_TIME_ZONE) {
   };
 }
 
-function buildCorsHeaders(originValue) {
+function trimTrailingSlash(value) {
+  return value.replace(/\/+$/, "");
+}
+
+function normalizeOriginValue(originValue) {
+  if (typeof originValue !== "string") {
+    return "";
+  }
+
+  const trimmed = originValue.trim();
+
+  if (!trimmed || trimmed === "*") {
+    return trimmed;
+  }
+
+  return trimTrailingSlash(trimmed);
+}
+
+function buildCorsHeaders(configuredOriginValue, requestOriginValue) {
+  const configuredOrigin = normalizeOriginValue(configuredOriginValue);
+  const requestOrigin = normalizeOriginValue(requestOriginValue);
+  const allowOrigin =
+    configuredOrigin === "*" || !requestOrigin || requestOrigin !== configuredOrigin
+      ? configuredOrigin
+      : requestOriginValue;
+
   return {
-    "Access-Control-Allow-Origin": originValue,
+    "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization"
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    Vary: "Origin",
   };
 }
 
