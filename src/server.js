@@ -34,7 +34,8 @@ const {
 
 const port = Number(process.env.PORT || 3000);
 const timeZone = process.env.APP_TIME_ZONE || "Asia/Ho_Chi_Minh";
-const corsOrigin = process.env.CORS_ORIGIN || "http://localhost:3026";
+const corsOrigin =
+  process.env.CORS_ORIGIN || "https://fe-ot-worker.vercel.app/";
 
 function createDefaultProfile(username, authUserId = null) {
   return {
