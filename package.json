@@ -1,0 +1,22 @@
+{
+  "name": "otworkerbe",
+  "version": "1.0.0",
+  "description": "Backend REST API for the OTWORKER overtime tracker app.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node --env-file=.env src/server.js",
+    "dev": "node --env-file=.env --watch src/server.js",
+    "test:smoke": "node --env-file=.env scripts/smoke-test.js"
+  },
+  "keywords": [
+    "otworker",
+    "backend",
+    "nodejs",
+    "rest"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.105.4",
+    "jose": "^6.2.3"
+  }
+}
