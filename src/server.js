@@ -778,9 +778,13 @@ function createServer() {
   return http.createServer(handleRequest);
 }
 
-async function startServer() {
+async function initializeApp() {
   assertAuthConfig();
   await connectToDatabase();
+}
+
+async function startServer() {
+  await initializeApp();
 
   const server = createServer();
   await new Promise((resolve) => {
@@ -803,5 +807,7 @@ if (require.main === module) {
 
 module.exports = {
   createServer,
+  handleRequest,
+  initializeApp,
   startServer,
 };
