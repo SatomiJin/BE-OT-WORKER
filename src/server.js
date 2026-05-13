@@ -805,9 +805,36 @@ if (require.main === module) {
   });
 }
 
-module.exports = {
-  createServer,
-  handleRequest,
-  initializeApp,
-  startServer,
-};
+let initPromise;
+
+async function vercelHandler(request, response) {
+  try {
+    initPromise ||= initializeApp();
+    await initPromise;
+    await handleRequest(request, response);
+  } catch (error) {
+    console.error(error.message || error);
+
+    if (!response.headersSent) {
+      response.statusCode = error.statusCode || 500;
+      response.setHeader("Content-Type", "application/json");
+      response.end(
+        JSON.stringify({
+          message:
+            response.statusCode === 500
+              ? "Internal server error."
+              : error.message,
+        }),
+      );
+      return;
+    }
+
+    response.end();
+  }
+}
+
+module.exports = vercelHandler;
+module.exports.createServer = createServer;
+module.exports.handleRequest = handleRequest;
+module.exports.initializeApp = initializeApp;
+module.exports.startServer = startServer;
