@@ -5,12 +5,17 @@ const { assertAuthConfig, authenticateRequest } = require("./auth");
 const {
   closeDatabase,
   connectToDatabase,
+  createEntry,
   createProfile,
+  deleteEntry,
   deleteProfile,
+  getEntriesByProfileId,
   getProfileByAuthUserId,
   getProfileByUsername,
-  replaceProfile,
-  replaceProfileByAuthUserId,
+  stopTimer,
+  updateEntry,
+  updateProfileByAuthUserId,
+  updateProfileByUsername,
 } = require("./store");
 const {
   buildCorsHeaders,
@@ -51,14 +56,6 @@ function createDefaultProfile(username, authUserId = null) {
     activeTimer: null,
     entries: [],
   };
-}
-
-function requireProfile(profile, username) {
-  if (!profile) {
-    throw createHttpError(404, `Profile ${username} was not found.`);
-  }
-
-  return profile;
 }
 
 function normalizeEntry(entry) {
@@ -104,6 +101,35 @@ function createEntryFromTimer(activeTimer, stopDate) {
 
 function getRequestOwnerId(request) {
   return request.auth?.sub || null;
+}
+
+function requireSuccessfulProfileUpdate(updatedProfile, label = "Profile") {
+  if (!updatedProfile) {
+    throw createHttpError(
+      409,
+      `${label} changed while the request was being processed. Please retry.`,
+    );
+  }
+
+  return updatedProfile;
+}
+
+async function buildProfilePayload(profile, auth) {
+  const entries = await getEntriesByProfileId(profile.id, auth);
+
+  return normalizeProfile({
+    ...profile,
+    entries,
+  });
+}
+
+async function sendProfile(response, statusCode, profile, auth, corsHeaders) {
+  sendJson(
+    response,
+    statusCode,
+    await buildProfilePayload(profile, auth),
+    corsHeaders,
+  );
 }
 
 async function requireOwnedProfile(request, username) {
@@ -152,14 +178,20 @@ async function requireCurrentUserProfile(request) {
   return profile;
 }
 
-async function persistCurrentUserProfile(request, profile) {
+async function updateCurrentUserProfile(
+  request,
+  updates,
+  expectedUpdatedAt = undefined,
+) {
   const ownerId = getRequestOwnerId(request);
 
   if (!ownerId) {
     throw createHttpError(401, "Token is missing subject claim.");
   }
 
-  return replaceProfileByAuthUserId(ownerId, request.auth, profile);
+  return updateProfileByAuthUserId(ownerId, request.auth, updates, {
+    expectedUpdatedAt,
+  });
 }
 
 async function handleRequest(request, response) {
@@ -305,7 +337,7 @@ async function handleRequest(request, response) {
 async function handleCurrentProfileRoutes(request, response, corsHeaders) {
   if (request.method === "GET") {
     const profile = await requireCurrentUserProfile(request);
-    sendJson(response, 200, normalizeProfile(profile), corsHeaders);
+    await sendProfile(response, 200, profile, request.auth, corsHeaders);
     return;
   }
 
@@ -313,18 +345,19 @@ async function handleCurrentProfileRoutes(request, response, corsHeaders) {
     const profile = await requireCurrentUserProfile(request);
     const body = await readJsonBody(request);
     const updates = validateProfileUpdatePayload(body);
+    const updatedProfile = await updateCurrentUserProfile(
+      request,
+      updates,
+      profile.updatedAt,
+    );
 
-    if (updates.selectedMonth !== undefined) {
-      profile.selectedMonth = updates.selectedMonth;
-    }
-
-    if (updates.employee !== undefined) {
-      profile.employee = updates.employee;
-    }
-
-    const updatedProfile = await persistCurrentUserProfile(request, profile);
-
-    sendJson(response, 200, normalizeProfile(updatedProfile), corsHeaders);
+    await sendProfile(
+      response,
+      200,
+      requireSuccessfulProfileUpdate(updatedProfile),
+      request.auth,
+      corsHeaders,
+    );
     return;
   }
 
@@ -360,7 +393,7 @@ async function handleCurrentProfileInitRoute(request, response, corsHeaders) {
 async function handleProfileRoutes(request, response, username, corsHeaders) {
   if (request.method === "GET") {
     const profile = await requireOwnedProfile(request, username);
-    sendJson(response, 200, normalizeProfile(profile), corsHeaders);
+    await sendProfile(response, 200, profile, request.auth, corsHeaders);
     return;
   }
 
@@ -368,24 +401,20 @@ async function handleProfileRoutes(request, response, username, corsHeaders) {
     const profile = await requireOwnedProfile(request, username);
     const body = await readJsonBody(request);
     const updates = validateProfileUpdatePayload(body);
-
-    if (updates.selectedMonth !== undefined) {
-      profile.selectedMonth = updates.selectedMonth;
-    }
-
-    if (updates.employee !== undefined) {
-      profile.employee = updates.employee;
-    }
-
-    const updatedProfile = await replaceProfile(
+    const updatedProfile = await updateProfileByUsername(
       username,
       request.auth,
-      profile,
+      updates,
+      {
+        expectedUpdatedAt: profile.updatedAt,
+      },
     );
-    sendJson(
+
+    await sendProfile(
       response,
       200,
-      normalizeProfile(requireProfile(updatedProfile, username)),
+      requireSuccessfulProfileUpdate(updatedProfile),
+      request.auth,
       corsHeaders,
     );
     return;
@@ -415,33 +444,28 @@ async function handleEntryRoutes(
   requestUrl,
   corsHeaders,
 ) {
+  const profile = await requireOwnedProfile(request, username);
+
   if (pathSegments.length === 4) {
     if (request.method === "GET") {
       const month = validateMonthQuery(
         requestUrl.searchParams.get("month") || undefined,
       );
-      const profile = await requireOwnedProfile(request, username);
-      const entries = month
-        ? profile.entries.filter((entry) => entry.date.startsWith(`${month}-`))
-        : profile.entries;
+      const entries = await getEntriesByProfileId(profile.id, request.auth, month);
 
       sendJson(response, 200, entries.map(normalizeEntry), corsHeaders);
       return;
     }
 
     if (request.method === "POST") {
-      const profile = await requireOwnedProfile(request, username);
       const body = await readJsonBody(request);
       const entryPayload = validateEntryPayload(body);
-      const entry = {
+      const createdEntry = await createEntry(profile, request.auth, {
         id: createId("ot"),
         ...entryPayload,
-      };
+      });
 
-      profile.entries.push(entry);
-      await replaceProfile(username, request.auth, profile);
-
-      sendJson(response, 201, normalizeEntry(entry), corsHeaders);
+      sendJson(response, 201, normalizeEntry(createdEntry), corsHeaders);
       return;
     }
 
@@ -451,36 +475,31 @@ async function handleEntryRoutes(
 
   if (pathSegments.length === 5) {
     const entryId = pathSegments[4];
-    const profile = await requireOwnedProfile(request, username);
-    const entryIndex = profile.entries.findIndex((item) => item.id === entryId);
-
-    if (entryIndex === -1) {
-      throw createHttpError(404, `Entry ${entryId} was not found.`);
-    }
 
     if (request.method === "PUT") {
       const body = await readJsonBody(request);
       const entryPayload = validateEntryPayload(body);
-      profile.entries[entryIndex] = {
-        id: entryId,
-        ...entryPayload,
-      };
-
-      const updatedProfile = await replaceProfile(
-        username,
+      const updatedEntry = await updateEntry(
+        profile.id,
+        entryId,
         request.auth,
-        profile,
+        entryPayload,
       );
-      const entry = requireProfile(updatedProfile, username).entries.find(
-        (item) => item.id === entryId,
-      );
-      sendJson(response, 200, normalizeEntry(entry), corsHeaders);
+
+      if (!updatedEntry) {
+        throw createHttpError(404, `Entry ${entryId} was not found.`);
+      }
+
+      sendJson(response, 200, normalizeEntry(updatedEntry), corsHeaders);
       return;
     }
 
     if (request.method === "DELETE") {
-      profile.entries = profile.entries.filter((entry) => entry.id !== entryId);
-      await replaceProfile(username, request.auth, profile);
+      const deleted = await deleteEntry(profile.id, entryId, request.auth);
+
+      if (!deleted) {
+        throw createHttpError(404, `Entry ${entryId} was not found.`);
+      }
 
       response.writeHead(204, corsHeaders);
       response.end();
@@ -508,9 +527,7 @@ async function handleCurrentEntryRoutes(
       const month = validateMonthQuery(
         requestUrl.searchParams.get("month") || undefined,
       );
-      const entries = month
-        ? profile.entries.filter((entry) => entry.date.startsWith(`${month}-`))
-        : profile.entries;
+      const entries = await getEntriesByProfileId(profile.id, request.auth, month);
 
       sendJson(response, 200, entries.map(normalizeEntry), corsHeaders);
       return;
@@ -519,15 +536,12 @@ async function handleCurrentEntryRoutes(
     if (request.method === "POST") {
       const body = await readJsonBody(request);
       const entryPayload = validateEntryPayload(body);
-      const entry = {
+      const createdEntry = await createEntry(profile, request.auth, {
         id: createId("ot"),
         ...entryPayload,
-      };
+      });
 
-      profile.entries.push(entry);
-      await persistCurrentUserProfile(request, profile);
-
-      sendJson(response, 201, normalizeEntry(entry), corsHeaders);
+      sendJson(response, 201, normalizeEntry(createdEntry), corsHeaders);
       return;
     }
 
@@ -537,29 +551,31 @@ async function handleCurrentEntryRoutes(
 
   if (pathSegments.length === 5) {
     const entryId = pathSegments[4];
-    const entryIndex = profile.entries.findIndex((item) => item.id === entryId);
-
-    if (entryIndex === -1) {
-      throw createHttpError(404, `Entry ${entryId} was not found.`);
-    }
 
     if (request.method === "PUT") {
       const body = await readJsonBody(request);
       const entryPayload = validateEntryPayload(body);
-      profile.entries[entryIndex] = {
-        id: entryId,
-        ...entryPayload,
-      };
+      const updatedEntry = await updateEntry(
+        profile.id,
+        entryId,
+        request.auth,
+        entryPayload,
+      );
 
-      const updatedProfile = await persistCurrentUserProfile(request, profile);
-      const entry = updatedProfile.entries.find((item) => item.id === entryId);
-      sendJson(response, 200, normalizeEntry(entry), corsHeaders);
+      if (!updatedEntry) {
+        throw createHttpError(404, `Entry ${entryId} was not found.`);
+      }
+
+      sendJson(response, 200, normalizeEntry(updatedEntry), corsHeaders);
       return;
     }
 
     if (request.method === "DELETE") {
-      profile.entries = profile.entries.filter((entry) => entry.id !== entryId);
-      await persistCurrentUserProfile(request, profile);
+      const deleted = await deleteEntry(profile.id, entryId, request.auth);
+
+      if (!deleted) {
+        throw createHttpError(404, `Entry ${entryId} was not found.`);
+      }
 
       response.writeHead(204, corsHeaders);
       response.end();
@@ -580,9 +596,9 @@ async function handleTimerRoutes(
   pathSegments,
   corsHeaders,
 ) {
-  if (pathSegments.length === 4) {
-    const profile = await requireOwnedProfile(request, username);
+  const profile = await requireOwnedProfile(request, username);
 
+  if (pathSegments.length === 4) {
     if (request.method === "GET") {
       sendJson(response, 200, profile.activeTimer, corsHeaders);
       return;
@@ -595,20 +611,24 @@ async function handleTimerRoutes(
 
       const body = await readJsonBody(request);
       const { note } = validateTimerPayload(body);
-      profile.activeTimer = {
-        ...profile.activeTimer,
-        note,
-      };
-
-      const updatedProfile = await replaceProfile(
+      const updatedProfile = await updateProfileByUsername(
         username,
         request.auth,
-        profile,
+        {
+          activeTimer: {
+            ...profile.activeTimer,
+            note,
+          },
+        },
+        {
+          expectedUpdatedAt: profile.updatedAt,
+        },
       );
+
       sendJson(
         response,
         200,
-        requireProfile(updatedProfile, username).activeTimer,
+        requireSuccessfulProfileUpdate(updatedProfile, "Timer").activeTimer,
         corsHeaders,
       );
       return;
@@ -624,8 +644,6 @@ async function handleTimerRoutes(
       return;
     }
 
-    const profile = await requireOwnedProfile(request, username);
-
     if (profile.activeTimer) {
       throw createHttpError(
         409,
@@ -639,10 +657,18 @@ async function handleTimerRoutes(
       startedAt: new Date().toISOString(),
       note,
     };
+    const updatedProfile = await updateProfileByUsername(
+      username,
+      request.auth,
+      {
+        activeTimer: timer,
+      },
+      {
+        expectedUpdatedAt: profile.updatedAt,
+      },
+    );
 
-    profile.activeTimer = timer;
-    await replaceProfile(username, request.auth, profile);
-
+    requireSuccessfulProfileUpdate(updatedProfile, "Timer");
     sendJson(response, 200, timer, corsHeaders);
     return;
   }
@@ -652,8 +678,6 @@ async function handleTimerRoutes(
       methodNotAllowed(response, ["POST"]);
       return;
     }
-
-    const profile = await requireOwnedProfile(request, username);
 
     if (!profile.activeTimer) {
       throw createHttpError(
@@ -669,12 +693,8 @@ async function handleTimerRoutes(
       note: note !== "" ? note : profile.activeTimer.note,
     };
     const entry = createEntryFromTimer(timer, new Date());
-
-    profile.activeTimer = null;
-    profile.entries.push(entry);
-    await replaceProfile(username, request.auth, profile);
-
-    sendJson(response, 200, normalizeEntry(entry), corsHeaders);
+    const createdEntry = await stopTimer(profile, request.auth, entry);
+    sendJson(response, 200, normalizeEntry(createdEntry), corsHeaders);
     return;
   }
 
@@ -702,13 +722,23 @@ async function handleCurrentTimerRoutes(
 
       const body = await readJsonBody(request);
       const { note } = validateTimerPayload(body);
-      profile.activeTimer = {
-        ...profile.activeTimer,
-        note,
-      };
+      const updatedProfile = await updateCurrentUserProfile(
+        request,
+        {
+          activeTimer: {
+            ...profile.activeTimer,
+            note,
+          },
+        },
+        profile.updatedAt,
+      );
 
-      const updatedProfile = await persistCurrentUserProfile(request, profile);
-      sendJson(response, 200, updatedProfile.activeTimer, corsHeaders);
+      sendJson(
+        response,
+        200,
+        requireSuccessfulProfileUpdate(updatedProfile, "Timer").activeTimer,
+        corsHeaders,
+      );
       return;
     }
 
@@ -735,10 +765,15 @@ async function handleCurrentTimerRoutes(
       startedAt: new Date().toISOString(),
       note,
     };
+    const updatedProfile = await updateCurrentUserProfile(
+      request,
+      {
+        activeTimer: timer,
+      },
+      profile.updatedAt,
+    );
 
-    profile.activeTimer = timer;
-    await persistCurrentUserProfile(request, profile);
-
+    requireSuccessfulProfileUpdate(updatedProfile, "Timer");
     sendJson(response, 200, timer, corsHeaders);
     return;
   }
@@ -763,12 +798,8 @@ async function handleCurrentTimerRoutes(
       note: note !== "" ? note : profile.activeTimer.note,
     };
     const entry = createEntryFromTimer(timer, new Date());
-
-    profile.activeTimer = null;
-    profile.entries.push(entry);
-    await persistCurrentUserProfile(request, profile);
-
-    sendJson(response, 200, normalizeEntry(entry), corsHeaders);
+    const createdEntry = await stopTimer(profile, request.auth, entry);
+    sendJson(response, 200, normalizeEntry(createdEntry), corsHeaders);
     return;
   }
 

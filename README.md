@@ -8,9 +8,10 @@ Backend REST API for the OTWORKER overtime tracker app. This implementation uses
 - Account-first current-user lookup by authenticated `authUserId`
 - Backward-compatible profile CRUD by `username`
 - Employee and `selectedMonth` update
-- OT entry CRUD
+- OT entry CRUD backed by a dedicated `otworker_entries` table
 - Active timer start / view / update / stop
 - Supabase persistence so data survives browser cache clears
+- Leaner profile and timer reads so large OT histories do not bloat every response
 - Input validation and conflict responses
 - CORS configuration by environment variable
 
@@ -43,9 +44,11 @@ Server default:
 - `SUPABASE_ANON_KEY`: Required. Used together with the authenticated user's access token so queries run under RLS.
 - `SUPABASE_SERVICE_ROLE_KEY`: Optional but recommended. Lets the backend enforce ownership itself and keeps `403`/`404` behavior precise.
 - `SUPABASE_TABLE_NAME`: Optional. Default `otworker_profiles`.
+- `SUPABASE_ENTRIES_TABLE_NAME`: Optional. Default `otworker_entries`.
 - `SUPABASE_JWT_VERIFY`: Set to `true` to require `Authorization: Bearer <access_token>` on `/api/*`.
 - `SUPABASE_JWT_AUDIENCE`: Optional audience claim to enforce.
 - `SUPABASE_JWT_ISSUER`: Optional issuer override. Default is `<SUPABASE_URL>/auth/v1`.
+- `MAX_REQUEST_BODY_BYTES`: Optional request body limit. Default `65536`.
 
 ## Authentication
 
@@ -97,14 +100,15 @@ This flow assumes your Supabase project is using asymmetric signing keys so the 
 
 ## Data Shape
 
-Each row in the `otworker_profiles` table stores one profile with `authUserId`, `employee`, `activeTimer`, and `entries` embedded as JSON. Public API responses do not expose `authUserId`. The `/api/profiles/me*` routes read and update by the authenticated account's `authUserId`, while `username` routes are kept for backward compatibility.
+Each row in the `otworker_profiles` table stores one profile with `authUserId`, `employee`, and `activeTimer`. OT entries now live in a separate `otworker_entries` table keyed by `profile_id`, so entry listing and mutation no longer require rewriting an entire profile row. Public API responses do not expose `authUserId`. The `/api/profiles/me*` routes read and update by the authenticated account's `authUserId`, while `username` routes are kept for backward compatibility.
 
 ## Supabase Schema
 
 Run the SQL in [supabase/otworker_profiles.sql](/d:/Workspace/WorkSpace/AI/OTWORKERBE/supabase/otworker_profiles.sql:1) inside the Supabase SQL Editor before starting the backend. It creates:
 
-- the `otworker_profiles` table
-- a trigger to maintain `updated_at`
+- the `otworker_profiles` and `otworker_entries` tables
+- triggers to maintain `updated_at`
+- a migration step that backfills legacy embedded `entries` into `otworker_entries`
 - RLS policies so users can only access rows where `auth.uid() = auth_user_id`
 
 ## Smoke Test
