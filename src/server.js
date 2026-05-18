@@ -42,16 +42,16 @@ const timeZone = process.env.APP_TIME_ZONE || "Asia/Ho_Chi_Minh";
 const corsOrigin =
   process.env.CORS_ORIGIN || "https://fe-ot-worker.vercel.app";
 
-function createDefaultProfile(username, authUserId = null) {
+function createDefaultProfile(username, authUserId = null, employee = {}) {
   return {
     authUserId,
     username,
     selectedMonth: getMonthStamp(new Date(), timeZone),
     employee: {
-      label: username.split("-")[0]?.toUpperCase() || "USER",
-      employeeCode: "",
-      fullName: "",
-      sheetName: "Trang tinh1",
+      label: employee.label ?? username.split("-")[0]?.toUpperCase() ?? "USER",
+      employeeCode: employee.employeeCode ?? "",
+      fullName: employee.fullName ?? "",
+      sheetName: employee.sheetName ?? "",
     },
     activeTimer: null,
     entries: [],
@@ -276,11 +276,12 @@ async function handleRequest(request, response) {
 
     if (pathname === "/api/profiles" && request.method === "POST") {
       const body = await readJsonBody(request);
-      const { username } = validateCreateProfilePayload(body);
+      const { username, employee } = validateCreateProfilePayload(body);
 
       const profile = createDefaultProfile(
         username,
         getRequestOwnerId(request),
+        employee,
       );
       const storedProfile = await createProfile(profile, request.auth);
 
@@ -383,8 +384,8 @@ async function handleCurrentProfileInitRoute(request, response, corsHeaders) {
   }
 
   const body = await readJsonBody(request);
-  const { username } = validateCreateProfilePayload(body);
-  const profile = createDefaultProfile(username, ownerId);
+  const { username, employee } = validateCreateProfilePayload(body);
+  const profile = createDefaultProfile(username, ownerId, employee);
   const storedProfile = await createProfile(profile, request.auth);
 
   sendJson(response, 201, normalizeProfile(storedProfile), corsHeaders);

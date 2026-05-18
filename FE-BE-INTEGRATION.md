@@ -180,9 +180,14 @@ Request:
 
 ```json
 {
-  "username": "dong-huu-trong"
+  "username": "dong-huu-trong",
+  "employee": {
+    "sheetName": "Trang tinh OT thang 5"
+  }
 }
 ```
+
+`employee` la optional khi tao moi. FE nen gui `sheetName` ngay tu dau neu da biet gia tri nay.
 
 Response `201`:
 
@@ -194,7 +199,7 @@ Response `201`:
     "label": "DONG",
     "employeeCode": "",
     "fullName": "",
-    "sheetName": "Trang tinh1"
+    "sheetName": "Trang tinh OT thang 5"
   },
   "activeTimer": null,
   "entries": []
@@ -257,7 +262,10 @@ Request:
 
 ```json
 {
-  "username": "dong-huu-trong"
+  "username": "dong-huu-trong",
+  "employee": {
+    "sheetName": "Trang tinh OT thang 5"
+  }
 }
 ```
 

@@ -92,6 +92,20 @@ function validateEmployee(employee) {
   }
 }
 
+function validateCreateProfileEmployee(employee) {
+  if (!employee || typeof employee !== "object" || Array.isArray(employee)) {
+    throw validationError("employee", "employee must be an object.");
+  }
+
+  const employeeFields = ["label", "employeeCode", "fullName", "sheetName"];
+
+  for (const field of employeeFields) {
+    if (field in employee) {
+      assertString(employee[field], `employee.${field}`);
+    }
+  }
+}
+
 function sanitizeNote(note) {
   if (note === undefined) {
     return "";
@@ -125,9 +139,16 @@ function validateCreateProfilePayload(payload) {
 
   validateUsername(payload.username);
 
-  return {
+  const result = {
     username: payload.username
   };
+
+  if ("employee" in payload) {
+    validateCreateProfileEmployee(payload.employee);
+    result.employee = payload.employee;
+  }
+
+  return result;
 }
 
 function validateProfileUpdatePayload(payload) {

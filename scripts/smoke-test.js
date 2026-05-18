@@ -15,6 +15,7 @@ const { startServer } = require("../src/server");
 
 const baseUrl = `http://localhost:${process.env.PORT}`;
 const username = `dong-huu-trong-${Date.now()}`;
+const sheetName = `Sheet-${Date.now()}`;
 let accessToken = bootstrapAccessToken;
 let cleanupAuthUserId = null;
 
@@ -141,10 +142,16 @@ async function run() {
 
     response = await request("/api/profiles", {
       method: "POST",
-      body: JSON.stringify({ username })
+      body: JSON.stringify({
+        username,
+        employee: {
+          sheetName
+        }
+      })
     });
     assert.equal(response.status, 201);
     assert.equal(response.body.username, username);
+    assert.equal(response.body.employee.sheetName, sheetName);
 
     response = await request(`/api/profiles/${username}/entries`, {
       method: "POST",
