@@ -406,7 +406,7 @@ async function getProfileByUsername(username, auth) {
   return fromProfileRow(data);
 }
 
-async function listProfilesWithEntries(auth) {
+async function listProfiles(auth) {
   const client = await createSupabaseClient(auth);
   const profilesData = await runQuery(
     client
@@ -415,28 +415,38 @@ async function listProfilesWithEntries(auth) {
       .order("username", { ascending: true }),
   );
 
-  const profiles = Array.isArray(profilesData)
+  return Array.isArray(profilesData)
     ? profilesData.map(fromProfileRow)
     : [];
+}
+
+async function listProfilesWithEntries(auth, month) {
+  const client = await createSupabaseClient(auth);
+  const profiles = await listProfiles(auth);
 
   if ((await getEntriesStorageMode(auth)) === "embedded") {
     return Promise.all(
       profiles.map(async (profile) => ({
         ...profile,
-        entries: await getEntriesByProfileId(profile.id, auth),
+        entries: await getEntriesByProfileId(profile.id, auth, month),
       })),
     );
   }
 
-  const entriesData = await runQuery(
-    client
-      .from(SUPABASE_ENTRIES_TABLE_NAME)
-      .select(ENTRY_COLUMNS)
-      .order("profile_id", { ascending: true })
-      .order("entry_date", { ascending: true })
-      .order("start_time", { ascending: true })
-      .order("created_at", { ascending: true }),
-  );
+  let entriesQuery = client
+    .from(SUPABASE_ENTRIES_TABLE_NAME)
+    .select(ENTRY_COLUMNS)
+    .order("profile_id", { ascending: true })
+    .order("entry_date", { ascending: true })
+    .order("start_time", { ascending: true })
+    .order("created_at", { ascending: true });
+
+  if (month) {
+    const { start, end } = buildMonthRange(month);
+    entriesQuery = entriesQuery.gte("entry_date", start).lt("entry_date", end);
+  }
+
+  const entriesData = await runQuery(entriesQuery);
 
   const entriesByProfileId = new Map();
 
@@ -804,6 +814,7 @@ module.exports = {
   getEntryById,
   getProfileByAuthUserId,
   getProfileByUsername,
+  listProfiles,
   listProfilesWithEntries,
   stopTimer,
   updateEntry,

@@ -12,6 +12,7 @@ const {
   getEntriesByProfileId,
   getProfileByAuthUserId,
   getProfileByUsername,
+  listProfiles,
   listProfilesWithEntries,
   stopTimer,
   updateEntry,
@@ -80,6 +81,30 @@ function normalizeProfile(profile) {
     role: profile.role || "USER",
     selectedMonth: profile.selectedMonth,
     employee: profile.employee,
+    activeTimer: profile.activeTimer,
+    entries: Array.isArray(profile.entries)
+      ? profile.entries.map(normalizeEntry)
+      : [],
+  };
+}
+
+function normalizeMember(profile) {
+  return {
+    username: profile.username,
+    role: profile.role || "USER",
+    selectedMonth: profile.selectedMonth,
+    employee: {
+      label: profile.employee?.label || "",
+      employeeCode: profile.employee?.employeeCode || "",
+      fullName: profile.employee?.fullName || "",
+      sheetName: profile.employee?.sheetName || "",
+    },
+  };
+}
+
+function normalizeOtProfile(profile) {
+  return {
+    ...normalizeMember(profile),
     activeTimer: profile.activeTimer,
     entries: Array.isArray(profile.entries)
       ? profile.entries.map(normalizeEntry)
@@ -305,9 +330,35 @@ async function handleRequest(request, response) {
       return;
     }
 
+    if (pathname === "/api/admin/members") {
+      await handleAdminMembersRoute(request, response, corsHeaders);
+      return;
+    }
+
+    if (pathname === "/api/admin/ot-data") {
+      await handleAdminOtDataRoute(
+        request,
+        response,
+        requestUrl,
+        corsHeaders,
+      );
+      return;
+    }
+
     if (pathname === "/api/admin/ot-export") {
       await handleAdminOtExportRoute(request, response, corsHeaders);
       return;
+    }
+
+    if (pathname.startsWith("/api/admin/members/")) {
+      const pathSegments = pathname.split("/").filter(Boolean);
+
+      if (pathSegments.length === 4) {
+        const username = pathSegments[3];
+        validateUsername(username);
+        await handleAdminMemberRoute(request, response, username, corsHeaders);
+        return;
+      }
     }
 
     if (pathname.startsWith("/api/profiles/me/")) {
@@ -424,6 +475,78 @@ async function handleCurrentProfileRoutes(request, response, corsHeaders) {
   }
 
   methodNotAllowed(response, ["GET", "PUT"]);
+}
+
+async function handleAdminMembersRoute(request, response, corsHeaders) {
+  if (request.method !== "GET") {
+    methodNotAllowed(response, ["GET"]);
+    return;
+  }
+
+  await requireAdminProfile(request);
+
+  const profiles = await listProfiles(request.auth);
+  sendJson(
+    response,
+    200,
+    {
+      members: profiles.map(normalizeMember),
+    },
+    corsHeaders,
+  );
+}
+
+async function handleAdminMemberRoute(request, response, username, corsHeaders) {
+  if (request.method !== "GET") {
+    methodNotAllowed(response, ["GET"]);
+    return;
+  }
+
+  await requireAdminProfile(request);
+
+  const profile = await getProfileByUsername(username, request.auth);
+
+  if (!profile) {
+    throw createHttpError(404, `Profile ${username} was not found.`);
+  }
+
+  sendJson(
+    response,
+    200,
+    {
+      member: normalizeMember(profile),
+    },
+    corsHeaders,
+  );
+}
+
+async function handleAdminOtDataRoute(
+  request,
+  response,
+  requestUrl,
+  corsHeaders,
+) {
+  if (request.method !== "GET") {
+    methodNotAllowed(response, ["GET"]);
+    return;
+  }
+
+  await requireAdminProfile(request);
+
+  const month = validateMonthQuery(
+    requestUrl.searchParams.get("month") || undefined,
+  );
+  const profiles = await listProfilesWithEntries(request.auth, month);
+
+  sendJson(
+    response,
+    200,
+    {
+      month: month || null,
+      profiles: profiles.map(normalizeOtProfile),
+    },
+    corsHeaders,
+  );
 }
 
 async function handleAdminOtExportRoute(request, response, corsHeaders) {

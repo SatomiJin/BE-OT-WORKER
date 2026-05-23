@@ -102,9 +102,81 @@ This flow assumes your Supabase project is using asymmetric signing keys so the 
 
 ### Admin
 
+- `GET /api/admin/members`
+- `GET /api/admin/members/:username`
+- `GET /api/admin/ot-data`
 - `GET /api/admin/ot-export`
 
-Requires `Authorization: Bearer <Supabase access_token>` for a profile whose app `role` is `ADMIN`. The response is an Excel workbook download:
+`GET /api/admin/members` requires `Authorization: Bearer <Supabase access_token>` for a profile whose app `role` is `ADMIN`. It returns a lightweight member list for FE dropdowns:
+
+```json
+{
+  "members": [
+    {
+      "username": "huu-trong",
+      "role": "ADMIN",
+      "selectedMonth": "2026-05",
+      "employee": {
+        "label": "HUU",
+        "employeeCode": "001",
+        "fullName": "Dong Huu Trong",
+        "sheetName": "Huu Trong"
+      }
+    }
+  ]
+}
+```
+
+`GET /api/admin/members/:username` uses `username` as the lookup key and returns one lightweight member profile:
+
+```json
+{
+  "member": {
+    "username": "huu-trong",
+    "role": "ADMIN",
+    "selectedMonth": "2026-05",
+    "employee": {
+      "label": "HUU",
+      "employeeCode": "001",
+      "fullName": "Dong Huu Trong",
+      "sheetName": "Huu Trong"
+    }
+  }
+}
+```
+
+`GET /api/admin/ot-data` returns all member OT data as JSON so FE can build its own workbook. Add `?month=YYYY-MM` to only include entries in one month:
+
+```json
+{
+  "month": "2026-05",
+  "profiles": [
+    {
+      "username": "huu-trong",
+      "role": "ADMIN",
+      "selectedMonth": "2026-05",
+      "employee": {
+        "label": "HUU",
+        "employeeCode": "001",
+        "fullName": "Dong Huu Trong",
+        "sheetName": "Huu Trong"
+      },
+      "activeTimer": null,
+      "entries": [
+        {
+          "id": "ot-example",
+          "date": "2026-05-24",
+          "startTime": "19:30",
+          "endTime": "22:00",
+          "note": "OT task"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`GET /api/admin/ot-export` requires `Authorization: Bearer <Supabase access_token>` for a profile whose app `role` is `ADMIN`. The response is an Excel workbook download:
 
 ```http
 Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
