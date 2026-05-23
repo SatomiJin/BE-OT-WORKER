@@ -12,11 +12,16 @@ const {
   getEntriesByProfileId,
   getProfileByAuthUserId,
   getProfileByUsername,
+  listProfilesWithEntries,
   stopTimer,
   updateEntry,
   updateProfileByAuthUserId,
   updateProfileByUsername,
 } = require("./store");
+const {
+  buildOtExportWorkbookBuffer,
+  formatExportDate,
+} = require("./excel-export");
 const {
   buildCorsHeaders,
   createHttpError,
@@ -46,6 +51,7 @@ function createDefaultProfile(username, authUserId = null, employee = {}) {
   return {
     authUserId,
     username,
+    role: "USER",
     selectedMonth: getMonthStamp(new Date(), timeZone),
     employee: {
       label: employee.label ?? username.split("-")[0]?.toUpperCase() ?? "USER",
@@ -71,6 +77,7 @@ function normalizeEntry(entry) {
 function normalizeProfile(profile) {
   return {
     username: profile.username,
+    role: profile.role || "USER",
     selectedMonth: profile.selectedMonth,
     employee: profile.employee,
     activeTimer: profile.activeTimer,
@@ -101,6 +108,10 @@ function createEntryFromTimer(activeTimer, stopDate) {
 
 function getRequestOwnerId(request) {
   return request.auth?.sub || null;
+}
+
+function isAdminProfile(profile) {
+  return profile?.role === "ADMIN";
 }
 
 function requireSuccessfulProfileUpdate(updatedProfile, label = "Profile") {
@@ -162,6 +173,39 @@ async function requireOwnedProfile(request, username) {
   return profile;
 }
 
+async function requireReadableProfile(request, username) {
+  const profile = await getProfileByUsername(username, request.auth);
+
+  if (!profile) {
+    throw createHttpError(404, `Profile ${username} was not found.`);
+  }
+
+  const ownerId = getRequestOwnerId(request);
+
+  if (!ownerId) {
+    return profile;
+  }
+
+  if (profile.authUserId === ownerId) {
+    return profile;
+  }
+
+  const currentProfile = await getProfileByAuthUserId(ownerId, request.auth);
+
+  if (isAdminProfile(currentProfile)) {
+    return profile;
+  }
+
+  if (!profile.authUserId) {
+    throw createHttpError(
+      403,
+      `Profile ${username} is not linked to an authenticated user yet.`,
+    );
+  }
+
+  throw createHttpError(403, `You do not have access to profile ${username}.`);
+}
+
 async function requireCurrentUserProfile(request) {
   const ownerId = getRequestOwnerId(request);
 
@@ -173,6 +217,16 @@ async function requireCurrentUserProfile(request) {
 
   if (!profile) {
     throw createHttpError(404, "Profile for the current user was not found.");
+  }
+
+  return profile;
+}
+
+async function requireAdminProfile(request) {
+  const profile = await requireCurrentUserProfile(request);
+
+  if (!isAdminProfile(profile)) {
+    throw createHttpError(403, "Admin role is required.");
   }
 
   return profile;
@@ -232,7 +286,9 @@ async function handleRequest(request, response) {
           sub: request.auth?.sub || null,
           email: request.auth?.email || null,
           role: request.auth?.role || null,
-          profile: profile ? { username: profile.username } : null,
+          profile: profile
+            ? { username: profile.username, role: profile.role || "USER" }
+            : null,
         },
         corsHeaders,
       );
@@ -246,6 +302,11 @@ async function handleRequest(request, response) {
 
     if (pathname === "/api/profiles/me/init") {
       await handleCurrentProfileInitRoute(request, response, corsHeaders);
+      return;
+    }
+
+    if (pathname === "/api/admin/ot-export") {
+      await handleAdminOtExportRoute(request, response, corsHeaders);
       return;
     }
 
@@ -365,6 +426,29 @@ async function handleCurrentProfileRoutes(request, response, corsHeaders) {
   methodNotAllowed(response, ["GET", "PUT"]);
 }
 
+async function handleAdminOtExportRoute(request, response, corsHeaders) {
+  if (request.method !== "GET") {
+    methodNotAllowed(response, ["GET"]);
+    return;
+  }
+
+  await requireAdminProfile(request);
+
+  const profiles = await listProfilesWithEntries(request.auth);
+  const workbookBuffer = await buildOtExportWorkbookBuffer(profiles);
+  const filename = `otworker-ot-export-${formatExportDate()}.xlsx`;
+
+  response.writeHead(200, {
+    ...corsHeaders,
+    "Content-Type":
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "Content-Disposition": `attachment; filename="${filename}"`,
+    "Content-Length": Buffer.byteLength(workbookBuffer),
+    "Cache-Control": "no-store",
+  });
+  response.end(Buffer.from(workbookBuffer));
+}
+
 async function handleCurrentProfileInitRoute(request, response, corsHeaders) {
   if (request.method !== "POST") {
     methodNotAllowed(response, ["POST"]);
@@ -393,7 +477,7 @@ async function handleCurrentProfileInitRoute(request, response, corsHeaders) {
 
 async function handleProfileRoutes(request, response, username, corsHeaders) {
   if (request.method === "GET") {
-    const profile = await requireOwnedProfile(request, username);
+    const profile = await requireReadableProfile(request, username);
     await sendProfile(response, 200, profile, request.auth, corsHeaders);
     return;
   }
@@ -445,7 +529,9 @@ async function handleEntryRoutes(
   requestUrl,
   corsHeaders,
 ) {
-  const profile = await requireOwnedProfile(request, username);
+  const profile = request.method === "GET"
+    ? await requireReadableProfile(request, username)
+    : await requireOwnedProfile(request, username);
 
   if (pathSegments.length === 4) {
     if (request.method === "GET") {
@@ -597,7 +683,9 @@ async function handleTimerRoutes(
   pathSegments,
   corsHeaders,
 ) {
-  const profile = await requireOwnedProfile(request, username);
+  const profile = request.method === "GET"
+    ? await requireReadableProfile(request, username)
+    : await requireOwnedProfile(request, username);
 
   if (pathSegments.length === 4) {
     if (request.method === "GET") {

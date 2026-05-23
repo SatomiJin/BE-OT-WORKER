@@ -5,7 +5,9 @@ const SUPABASE_TABLE_NAME =
   process.env.SUPABASE_TABLE_NAME || "otworker_profiles";
 const SUPABASE_ENTRIES_TABLE_NAME =
   process.env.SUPABASE_ENTRIES_TABLE_NAME || "otworker_entries";
-const PROFILE_COLUMNS =
+const PROFILE_COLUMNS_WITH_ROLE =
+  "id, auth_user_id, username, role, selected_month, employee, active_timer, updated_at";
+const PROFILE_COLUMNS_WITHOUT_ROLE =
   "id, auth_user_id, username, selected_month, employee, active_timer, updated_at";
 const ENTRY_COLUMNS =
   "id, profile_id, auth_user_id, entry_date, start_time, end_time, note, created_at, updated_at";
@@ -14,6 +16,7 @@ let supabaseModulePromise;
 let serviceRoleClientPromise;
 let publicClientPromise;
 let entriesStorageModePromise;
+let profileRoleColumnPromise;
 
 function createStoreError(statusCode, message) {
   const error = new Error(message);
@@ -94,14 +97,20 @@ async function createSupabaseClient(auth) {
   );
 }
 
-function toProfileInsertRow(profile) {
-  return {
+function toProfileInsertRow(profile, includeRole = true) {
+  const row = {
     auth_user_id: profile.authUserId,
     username: profile.username,
     selected_month: profile.selectedMonth,
     employee: profile.employee,
     active_timer: profile.activeTimer,
   };
+
+  if (includeRole) {
+    row.role = profile.role;
+  }
+
+  return row;
 }
 
 function toProfileUpdateRow(updates) {
@@ -152,6 +161,7 @@ function fromProfileRow(row) {
     id: row.id,
     authUserId: row.auth_user_id,
     username: row.username,
+    role: row.role || "USER",
     selectedMonth: row.selected_month,
     employee: row.employee,
     activeTimer: row.active_timer,
@@ -210,6 +220,12 @@ function isMissingEntriesTableError(error) {
     error.code === "42P01" ||
     message.includes(SUPABASE_ENTRIES_TABLE_NAME.toLowerCase())
   );
+}
+
+function isMissingRoleColumnError(error) {
+  const message = [error.message, error.hint].filter(Boolean).join(" ").toLowerCase();
+
+  return error.code === "42703" && message.includes("role");
 }
 
 function mapSupabaseError(error) {
@@ -278,6 +294,36 @@ async function getEntriesStorageMode(auth) {
   return entriesStorageModePromise;
 }
 
+async function hasProfileRoleColumn(auth) {
+  if (!profileRoleColumnPromise) {
+    profileRoleColumnPromise = (async () => {
+      const client = await createSupabaseClient(auth);
+      const { error } = await client
+        .from(SUPABASE_TABLE_NAME)
+        .select("role")
+        .limit(1);
+
+      if (!error) {
+        return true;
+      }
+
+      if (isMissingRoleColumnError(error)) {
+        return false;
+      }
+
+      throw mapSupabaseError(error);
+    })();
+  }
+
+  return profileRoleColumnPromise;
+}
+
+async function getProfileColumns(auth) {
+  return (await hasProfileRoleColumn(auth))
+    ? PROFILE_COLUMNS_WITH_ROLE
+    : PROFILE_COLUMNS_WITHOUT_ROLE;
+}
+
 function buildMonthRange(month) {
   const [year, monthIndex] = month.split("-").map(Number);
   const start = new Date(Date.UTC(year, monthIndex - 1, 1));
@@ -339,7 +385,7 @@ async function getProfileByAuthUserId(authUserId, auth) {
   const data = await runQuery(
     client
       .from(SUPABASE_TABLE_NAME)
-      .select(PROFILE_COLUMNS)
+      .select(await getProfileColumns(auth))
       .eq("auth_user_id", authUserId)
       .maybeSingle(),
   );
@@ -352,7 +398,7 @@ async function getProfileByUsername(username, auth) {
   const data = await runQuery(
     client
       .from(SUPABASE_TABLE_NAME)
-      .select(PROFILE_COLUMNS)
+      .select(await getProfileColumns(auth))
       .eq("username", username)
       .maybeSingle(),
   );
@@ -360,13 +406,62 @@ async function getProfileByUsername(username, auth) {
   return fromProfileRow(data);
 }
 
+async function listProfilesWithEntries(auth) {
+  const client = await createSupabaseClient(auth);
+  const profilesData = await runQuery(
+    client
+      .from(SUPABASE_TABLE_NAME)
+      .select(await getProfileColumns(auth))
+      .order("username", { ascending: true }),
+  );
+
+  const profiles = Array.isArray(profilesData)
+    ? profilesData.map(fromProfileRow)
+    : [];
+
+  if ((await getEntriesStorageMode(auth)) === "embedded") {
+    return Promise.all(
+      profiles.map(async (profile) => ({
+        ...profile,
+        entries: await getEntriesByProfileId(profile.id, auth),
+      })),
+    );
+  }
+
+  const entriesData = await runQuery(
+    client
+      .from(SUPABASE_ENTRIES_TABLE_NAME)
+      .select(ENTRY_COLUMNS)
+      .order("profile_id", { ascending: true })
+      .order("entry_date", { ascending: true })
+      .order("start_time", { ascending: true })
+      .order("created_at", { ascending: true }),
+  );
+
+  const entriesByProfileId = new Map();
+
+  for (const entry of Array.isArray(entriesData)
+    ? entriesData.map(fromEntryRow)
+    : []) {
+    const profileEntries = entriesByProfileId.get(entry.profileId) || [];
+    profileEntries.push(entry);
+    entriesByProfileId.set(entry.profileId, profileEntries);
+  }
+
+  return profiles.map((profile) => ({
+    ...profile,
+    entries: entriesByProfileId.get(profile.id) || [],
+  }));
+}
+
 async function createProfile(profile, auth) {
   const client = await createSupabaseClient(auth);
+  const includeRole = await hasProfileRoleColumn(auth);
   const data = await runQuery(
     client
       .from(SUPABASE_TABLE_NAME)
-      .insert(toProfileInsertRow(profile))
-      .select(PROFILE_COLUMNS)
+      .insert(toProfileInsertRow(profile, includeRole))
+      .select(await getProfileColumns(auth))
       .single(),
   );
 
@@ -381,7 +476,7 @@ async function updateProfileById(profileId, auth, updates, options = {}) {
     .eq("id", profileId);
 
   query = applyExpectedUpdatedAt(query, options.expectedUpdatedAt);
-  query = query.select(PROFILE_COLUMNS).maybeSingle();
+  query = query.select(await getProfileColumns(auth)).maybeSingle();
 
   const data = await runQuery(query);
 
@@ -396,7 +491,7 @@ async function updateProfileByUsername(username, auth, updates, options = {}) {
     .eq("username", username);
 
   query = applyExpectedUpdatedAt(query, options.expectedUpdatedAt);
-  query = query.select(PROFILE_COLUMNS).maybeSingle();
+  query = query.select(await getProfileColumns(auth)).maybeSingle();
 
   const data = await runQuery(query);
 
@@ -418,7 +513,7 @@ async function updateProfileByAuthUserId(
     .eq("auth_user_id", authUserId);
 
   query = applyExpectedUpdatedAt(query, options.expectedUpdatedAt);
-  query = query.select(PROFILE_COLUMNS).maybeSingle();
+  query = query.select(await getProfileColumns(auth)).maybeSingle();
 
   const data = await runQuery(query);
 
@@ -709,6 +804,7 @@ module.exports = {
   getEntryById,
   getProfileByAuthUserId,
   getProfileByUsername,
+  listProfilesWithEntries,
   stopTimer,
   updateEntry,
   updateProfileByAuthUserId,

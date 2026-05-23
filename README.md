@@ -10,6 +10,7 @@ Backend REST API for the OTWORKER overtime tracker app. This implementation uses
 - Employee and `selectedMonth` update
 - OT entry CRUD backed by a dedicated `otworker_entries` table
 - Active timer start / view / update / stop
+- Admin-only Excel export for all member OT profiles and entries
 - Supabase persistence so data survives browser cache clears
 - Leaner profile and timer reads so large OT histories do not bloat every response
 - Input validation and conflict responses
@@ -24,7 +25,7 @@ Backend REST API for the OTWORKER overtime tracker app. This implementation uses
 1. Copy `.env.example` to `.env`.
 2. Fill in `SUPABASE_URL` and `SUPABASE_ANON_KEY`.
 3. Create the database table and RLS policies from [supabase/otworker_profiles.sql](/d:/Workspace/WorkSpace/AI/OTWORKERBE/supabase/otworker_profiles.sql:1).
-3. Start the server:
+4. Start the server:
 
 ```bash
 npm start
@@ -58,7 +59,8 @@ When `SUPABASE_JWT_VERIFY=true`, the backend verifies Supabase access tokens loc
 - Public route: `GET /health`
 - Required header: `Authorization: Bearer <Supabase access_token>`
 - Claims made available to the server: `sub`, `email`, `role`
-- Ownership rule: profile routes only allow the authenticated owner whose `sub` matches the stored `authUserId`
+- Ownership rule: profile routes only allow the authenticated owner whose `sub` matches the stored `authUserId`; profiles with app `role = ADMIN` can read other accounts' OT data
+- Admin export rule: profiles with app `role = ADMIN` can download the full OT workbook for all members
 - Database access path:
   If `SUPABASE_SERVICE_ROLE_KEY` is set, the backend uses it for database queries and enforces ownership in application code.
   Otherwise, the backend falls back to `SUPABASE_ANON_KEY` plus the same bearer token so Supabase RLS applies to the signed-in user.
@@ -98,18 +100,32 @@ This flow assumes your Supabase project is using asymmetric signing keys so the 
 - `PUT /api/profiles/:username/timer`
 - `POST /api/profiles/:username/timer/stop`
 
+### Admin
+
+- `GET /api/admin/ot-export`
+
+Requires `Authorization: Bearer <Supabase access_token>` for a profile whose app `role` is `ADMIN`. The response is an Excel workbook download:
+
+```http
+Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+Content-Disposition: attachment; filename="otworker-ot-export-YYYY-MM-DD.xlsx"
+```
+
+The workbook contains one worksheet per member. Each worksheet follows the FE `.xlsx` export format: columns A-I, member employee fields, OT date/time columns, total-hour formula, and explanation note. Overnight OT rows are split before export, for example `22:00 -> 01:30` becomes `22:00 -> 24:00` on the original date and `00:00 -> 01:30` on the next date.
+
 ## Data Shape
 
-Each row in the `otworker_profiles` table stores one profile with `authUserId`, `employee`, and `activeTimer`. OT entries now live in a separate `otworker_entries` table keyed by `profile_id`, so entry listing and mutation no longer require rewriting an entire profile row. Public API responses do not expose `authUserId`. The `/api/profiles/me*` routes read and update by the authenticated account's `authUserId`, while `username` routes are kept for backward compatibility.
+Each row in the `otworker_profiles` table stores one profile with `authUserId`, app `role`, `employee`, and `activeTimer`. The app role defaults to `USER`; set it to `ADMIN` in the database when an account needs read-only access to other accounts' OT data and the all-member Excel export. OT entries now live in a separate `otworker_entries` table keyed by `profile_id`, so entry listing and mutation no longer require rewriting an entire profile row. Public API responses do not expose `authUserId`. The `/api/profiles/me*` routes read and update by the authenticated account's `authUserId`, while `username` routes are kept for backward compatibility.
 
 ## Supabase Schema
 
 Run the SQL in [supabase/otworker_profiles.sql](/d:/Workspace/WorkSpace/AI/OTWORKERBE/supabase/otworker_profiles.sql:1) inside the Supabase SQL Editor before starting the backend. It creates:
 
 - the `otworker_profiles` and `otworker_entries` tables
+- a `role` column on profiles with default `USER` and allowed values `USER` / `ADMIN`
 - triggers to maintain `updated_at`
 - a migration step that backfills legacy embedded `entries` into `otworker_entries`
-- RLS policies so users can only access rows where `auth.uid() = auth_user_id`
+- RLS policies so users can access their own rows, while app admins can read other accounts' profile and entry rows
 
 ## Smoke Test
 

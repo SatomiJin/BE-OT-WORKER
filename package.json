@@ -17,6 +17,10 @@
   "license": "MIT",
   "dependencies": {
     "@supabase/supabase-js": "^2.105.4",
+    "exceljs": "^4.4.0",
     "jose": "^6.2.3"
+  },
+  "devDependencies": {
+    "supabase": "^2.100.1"
   }
 }
