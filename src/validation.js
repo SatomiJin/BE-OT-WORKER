@@ -30,7 +30,10 @@ function validateUsername(username) {
   }
 
   if (!USERNAME_PATTERN.test(username)) {
-    throw validationError("username", "username must be slug-style, for example dong-huu-trong.");
+    throw validationError(
+      "username",
+      "username must be slug-style, for example dong-huu-trong.",
+    );
   }
 }
 
@@ -38,13 +41,19 @@ function validateSelectedMonth(selectedMonth) {
   assertString(selectedMonth, "selectedMonth", { allowEmpty: false });
 
   if (!MONTH_PATTERN.test(selectedMonth)) {
-    throw validationError("selectedMonth", "selectedMonth must use YYYY-MM format.");
+    throw validationError(
+      "selectedMonth",
+      "selectedMonth must use YYYY-MM format.",
+    );
   }
 
   const [year, month] = selectedMonth.split("-").map(Number);
 
   if (month < 1 || month > 12 || year < 1970) {
-    throw validationError("selectedMonth", "selectedMonth is not a valid month.");
+    throw validationError(
+      "selectedMonth",
+      "selectedMonth is not a valid month.",
+    );
   }
 }
 
@@ -57,7 +66,10 @@ function validateDate(date) {
 
   const parsedDate = new Date(`${date}T00:00:00Z`);
 
-  if (Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== date) {
+  if (
+    Number.isNaN(parsedDate.getTime()) ||
+    parsedDate.toISOString().slice(0, 10) !== date
+  ) {
     throw validationError("date", "date is not valid.");
   }
 }
@@ -128,7 +140,7 @@ function validateEntryPayload(payload) {
     date: payload.date,
     startTime: payload.startTime,
     endTime: payload.endTime,
-    note: sanitizeNote(payload.note)
+    note: sanitizeNote(payload.note),
   };
 }
 
@@ -140,7 +152,7 @@ function validateCreateProfilePayload(payload) {
   validateUsername(payload.username);
 
   const result = {
-    username: payload.username
+    username: payload.username,
   };
 
   if ("employee" in payload) {
@@ -181,7 +193,7 @@ function validateTimerPayload(payload) {
   }
 
   return {
-    note: sanitizeNote(payload.note)
+    note: sanitizeNote(payload.note),
   };
 }
 
@@ -203,5 +215,5 @@ module.exports = {
   validateSelectedMonth,
   validateTime,
   validateTimerPayload,
-  validateUsername
+  validateUsername,
 };

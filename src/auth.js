@@ -38,7 +38,9 @@ function assertAuthConfig() {
   }
 
   if (!SUPABASE_URL) {
-    const error = new Error("SUPABASE_URL is required when SUPABASE_JWT_VERIFY=true.");
+    const error = new Error(
+      "SUPABASE_URL is required when SUPABASE_JWT_VERIFY=true.",
+    );
     error.statusCode = 500;
     throw error;
   }
@@ -57,7 +59,9 @@ async function loadSupabase() {
 async function getRemoteJwkSet() {
   if (!remoteJwkSetPromise) {
     const { createRemoteJWKSet } = await loadJose();
-    remoteJwkSetPromise = Promise.resolve(createRemoteJWKSet(new URL(`${getIssuer()}/.well-known/jwks.json`)));
+    remoteJwkSetPromise = Promise.resolve(
+      createRemoteJWKSet(new URL(`${getIssuer()}/.well-known/jwks.json`)),
+    );
   }
 
   return remoteJwkSetPromise;
@@ -73,7 +77,10 @@ function extractBearerToken(headers) {
   const [scheme, token, ...rest] = authorization.trim().split(/\s+/);
 
   if (rest.length > 0 || scheme !== "Bearer" || !token) {
-    throw createHttpError(401, "Authorization header must use Bearer token format.");
+    throw createHttpError(
+      401,
+      "Authorization header must use Bearer token format.",
+    );
   }
 
   return token;
@@ -85,14 +92,14 @@ function normalizeClaims(payload) {
     email: typeof payload.email === "string" ? payload.email : null,
     role: typeof payload.role === "string" ? payload.role : null,
     claims: payload,
-    token: null
+    token: null,
   };
 }
 
 function buildVerifyOptions() {
   const options = {
     issuer: getIssuer(),
-    clockTolerance: 5
+    clockTolerance: 5,
   };
 
   if (SUPABASE_JWT_AUDIENCE) {
@@ -181,10 +188,14 @@ async function authenticateRequest(request) {
   const remoteJwkSet = await getRemoteJwkSet();
 
   try {
-    const { payload } = await jwtVerify(token, remoteJwkSet, buildVerifyOptions());
+    const { payload } = await jwtVerify(
+      token,
+      remoteJwkSet,
+      buildVerifyOptions(),
+    );
     return {
       ...normalizeClaims(payload),
-      token
+      token,
     };
   } catch (error) {
     try {
@@ -198,5 +209,5 @@ async function authenticateRequest(request) {
 module.exports = {
   assertAuthConfig,
   authenticateRequest,
-  isAuthEnabled
+  isAuthEnabled,
 };
