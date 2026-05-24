@@ -2,10 +2,13 @@ const { createHttpError } = require("./utils");
 
 const AUTH_ENABLED = process.env.SUPABASE_JWT_VERIFY === "true";
 const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const SUPABASE_JWT_AUDIENCE = process.env.SUPABASE_JWT_AUDIENCE;
 
 let joseModulePromise;
 let remoteJwkSetPromise;
+let supabaseModulePromise;
+let supabaseAuthClientPromise;
 
 function trimTrailingSlash(value) {
   return value.replace(/\/+$/, "");
@@ -44,6 +47,11 @@ function assertAuthConfig() {
 async function loadJose() {
   joseModulePromise ||= import("jose");
   return joseModulePromise;
+}
+
+async function loadSupabase() {
+  supabaseModulePromise ||= import("@supabase/supabase-js");
+  return supabaseModulePromise;
 }
 
 async function getRemoteJwkSet() {
@@ -120,6 +128,49 @@ function mapJoseError(error) {
   return createHttpError(401, "Token is invalid.");
 }
 
+async function getSupabaseAuthClient() {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    return null;
+  }
+
+  if (!supabaseAuthClientPromise) {
+    const { createClient } = await loadSupabase();
+    supabaseAuthClientPromise = Promise.resolve(
+      createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: {
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+          persistSession: false,
+        },
+      }),
+    );
+  }
+
+  return supabaseAuthClientPromise;
+}
+
+async function authenticateWithSupabase(token) {
+  const client = await getSupabaseAuthClient();
+
+  if (!client) {
+    throw createHttpError(401, "Token is invalid.");
+  }
+
+  const { data, error } = await client.auth.getUser(token);
+
+  if (error || !data?.user) {
+    throw createHttpError(401, "Token is invalid.");
+  }
+
+  return {
+    sub: data.user.id || null,
+    email: data.user.email || null,
+    role: data.user.role || "authenticated",
+    claims: null,
+    token,
+  };
+}
+
 async function authenticateRequest(request) {
   if (!AUTH_ENABLED) {
     return null;
@@ -136,7 +187,11 @@ async function authenticateRequest(request) {
       token
     };
   } catch (error) {
-    throw mapJoseError(error);
+    try {
+      return await authenticateWithSupabase(token);
+    } catch {
+      throw mapJoseError(error);
+    }
   }
 }
 
