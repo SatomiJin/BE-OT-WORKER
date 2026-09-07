@@ -1,0 +1,7 @@
+project_id = "gwvjzrvycgppawwfhbkl"
+
+# The database webhook calls this function from a Postgres trigger, which has no
+# user session to borrow a JWT from. The function authenticates the caller with
+# FEEDBACK_WEBHOOK_SECRET instead, so Supabase's own JWT gate is turned off.
+[functions.notify-feedback]
+verify_jwt = false

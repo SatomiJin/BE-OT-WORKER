@@ -9,8 +9,8 @@
 --        supabase secrets set RESEND_API_KEY=... FEEDBACK_ALERT_TO=you@example.com
 --        supabase secrets set FEEDBACK_WEBHOOK_SECRET=<same value as below>
 --
--- Replace <PROJECT_REF> and <WEBHOOK_SECRET> before running this in the
--- Supabase SQL Editor.
+-- Replace <PROJECT_REF>, <WEBHOOK_SECRET>, and <SUPABASE_ANON_KEY> before
+-- running this in the Supabase SQL Editor.
 
 create extension if not exists pg_net with schema extensions;
 
@@ -23,11 +23,16 @@ as $$
 declare
   function_url text := 'https://<PROJECT_REF>.supabase.co/functions/v1/notify-feedback';
   webhook_secret text := '<WEBHOOK_SECRET>';
+  -- Sent so the call also works when the function keeps Supabase's default JWT
+  -- gate; the real authentication is the shared secret above. The anon key is
+  -- public (the frontend ships it), so it is safe to inline here.
+  anon_key text := '<SUPABASE_ANON_KEY>';
 begin
   perform extensions.http_post(
     url := function_url,
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || anon_key,
       'x-feedback-webhook-secret', webhook_secret
     ),
     body := jsonb_build_object(
