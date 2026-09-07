@@ -11,6 +11,10 @@ const PROFILE_COLUMNS_WITHOUT_ROLE =
   "id, auth_user_id, username, selected_month, employee, active_timer, updated_at";
 const ENTRY_COLUMNS =
   "id, profile_id, auth_user_id, entry_date, start_time, end_time, note, created_at, updated_at";
+const SUPABASE_FEEDBACK_TABLE_NAME =
+  process.env.SUPABASE_FEEDBACK_TABLE_NAME || "otworker_feedback";
+const FEEDBACK_COLUMNS =
+  "id, auth_user_id, profile_id, username, category, message, context, status, admin_note, created_at, updated_at";
 
 let supabaseModulePromise;
 let serviceRoleClientPromise;
@@ -188,6 +192,53 @@ function fromEntryRow(row) {
   };
 }
 
+function toFeedbackInsertRow(feedback) {
+  return {
+    id: feedback.id,
+    auth_user_id: feedback.authUserId,
+    profile_id: feedback.profileId,
+    username: feedback.username,
+    category: feedback.category,
+    message: feedback.message,
+    context: feedback.context,
+    status: feedback.status,
+  };
+}
+
+function toFeedbackUpdateRow(updates) {
+  const row = {};
+
+  if ("status" in updates) {
+    row.status = updates.status;
+  }
+
+  if ("adminNote" in updates) {
+    row.admin_note = updates.adminNote;
+  }
+
+  return row;
+}
+
+function fromFeedbackRow(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    authUserId: row.auth_user_id,
+    profileId: row.profile_id,
+    username: row.username || "",
+    category: row.category || "other",
+    message: row.message || "",
+    context: row.context ?? null,
+    status: row.status || "NEW",
+    adminNote: row.admin_note || "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function fromEmbeddedEntry(entry) {
   return {
     id: entry.id,
@@ -219,6 +270,16 @@ function isMissingEntriesTableError(error) {
     error.code === "PGRST205" ||
     error.code === "42P01" ||
     message.includes(SUPABASE_ENTRIES_TABLE_NAME.toLowerCase())
+  );
+}
+
+function isMissingFeedbackTableError(error) {
+  const message = [error.message, error.hint].filter(Boolean).join(" ").toLowerCase();
+
+  return (
+    error.code === "PGRST205" ||
+    error.code === "42P01" ||
+    message.includes(SUPABASE_FEEDBACK_TABLE_NAME.toLowerCase())
   );
 }
 
@@ -799,6 +860,115 @@ async function stopTimer(profile, auth, entry) {
   return createdEntry;
 }
 
+async function runFeedbackQuery(queryPromise) {
+  const { data, error } = await queryPromise;
+
+  if (error) {
+    if (isMissingFeedbackTableError(error)) {
+      throw createStoreError(
+        503,
+        `Feedback table ${SUPABASE_FEEDBACK_TABLE_NAME} is missing. Run supabase/otworker_feedback.sql.`,
+      );
+    }
+
+    throw mapSupabaseError(error);
+  }
+
+  return data;
+}
+
+async function createFeedback(feedback, auth) {
+  const client = await createSupabaseClient(auth);
+  const data = await runFeedbackQuery(
+    client
+      .from(SUPABASE_FEEDBACK_TABLE_NAME)
+      .insert(toFeedbackInsertRow(feedback))
+      .select(FEEDBACK_COLUMNS)
+      .single(),
+  );
+
+  return fromFeedbackRow(data);
+}
+
+async function listFeedback(auth, options = {}) {
+  const { status, category, limit = 50 } = options;
+  const client = await createSupabaseClient(auth);
+
+  let query = client
+    .from(SUPABASE_FEEDBACK_TABLE_NAME)
+    .select(FEEDBACK_COLUMNS)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (status) {
+    query = query.eq("status", status);
+  }
+
+  if (category) {
+    query = query.eq("category", category);
+  }
+
+  const data = await runFeedbackQuery(query);
+
+  return Array.isArray(data) ? data.map(fromFeedbackRow) : [];
+}
+
+async function listFeedbackByAuthUserId(authUserId, auth, options = {}) {
+  const { limit = 50 } = options;
+  const client = await createSupabaseClient(auth);
+  const data = await runFeedbackQuery(
+    client
+      .from(SUPABASE_FEEDBACK_TABLE_NAME)
+      .select(FEEDBACK_COLUMNS)
+      .eq("auth_user_id", authUserId)
+      .order("created_at", { ascending: false })
+      .limit(limit),
+  );
+
+  return Array.isArray(data) ? data.map(fromFeedbackRow) : [];
+}
+
+async function getFeedbackById(feedbackId, auth) {
+  const client = await createSupabaseClient(auth);
+  const data = await runFeedbackQuery(
+    client
+      .from(SUPABASE_FEEDBACK_TABLE_NAME)
+      .select(FEEDBACK_COLUMNS)
+      .eq("id", feedbackId)
+      .maybeSingle(),
+  );
+
+  return fromFeedbackRow(data);
+}
+
+async function updateFeedback(feedbackId, auth, updates) {
+  const client = await createSupabaseClient(auth);
+  const data = await runFeedbackQuery(
+    client
+      .from(SUPABASE_FEEDBACK_TABLE_NAME)
+      .update(toFeedbackUpdateRow(updates))
+      .eq("id", feedbackId)
+      .select(FEEDBACK_COLUMNS)
+      .maybeSingle(),
+  );
+
+  return fromFeedbackRow(data);
+}
+
+async function deleteFeedback(feedbackId, auth) {
+  const client = await createSupabaseClient(auth);
+  const data = await runFeedbackQuery(
+    client
+      .from(SUPABASE_FEEDBACK_TABLE_NAME)
+      .delete()
+      .eq("id", feedbackId)
+      .select("id")
+      .maybeSingle(),
+  );
+
+  return Boolean(data);
+}
+
 async function closeDatabase() {
   return undefined;
 }
@@ -807,17 +977,23 @@ module.exports = {
   closeDatabase,
   connectToDatabase,
   createEntry,
+  createFeedback,
   createProfile,
   deleteEntry,
+  deleteFeedback,
   deleteProfile,
   getEntriesByProfileId,
   getEntryById,
+  getFeedbackById,
   getProfileByAuthUserId,
   getProfileByUsername,
+  listFeedback,
+  listFeedbackByAuthUserId,
   listProfiles,
   listProfilesWithEntries,
   stopTimer,
   updateEntry,
+  updateFeedback,
   updateProfileByAuthUserId,
   updateProfileByUsername,
 };

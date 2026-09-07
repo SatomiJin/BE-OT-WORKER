@@ -3,6 +3,29 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const MONTH_PATTERN = /^\d{4}-\d{2}$/;
 const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
+const FEEDBACK_CATEGORIES = ["bug", "idea", "other"];
+const FEEDBACK_STATUSES = ["NEW", "TRIAGED", "RESOLVED", "WONT_FIX"];
+// Mirrors the maxlength on the feedback textarea in the frontend.
+const FEEDBACK_MESSAGE_MAX_LENGTH = 2000;
+const FEEDBACK_ADMIN_NOTE_MAX_LENGTH = 2000;
+// The frontend only ever attaches these keys; anything else is dropped so the
+// stored context cannot grow without bound.
+const FEEDBACK_CONTEXT_FIELDS = [
+  "username",
+  "email",
+  "displayName",
+  "role",
+  "page",
+  "userAgent",
+  "appVersion",
+  "language",
+  "platform",
+  "screen",
+  "timezone",
+  "selectedMonth",
+];
+const FEEDBACK_CONTEXT_VALUE_MAX_LENGTH = 500;
+
 function assertString(value, fieldName, options = {}) {
   const { allowEmpty = true } = options;
 
@@ -197,6 +220,154 @@ function validateTimerPayload(payload) {
   };
 }
 
+function validateFeedbackCategory(category) {
+  assertString(category, "category", { allowEmpty: false });
+
+  if (!FEEDBACK_CATEGORIES.includes(category)) {
+    throw validationError(
+      "category",
+      `category must be one of ${FEEDBACK_CATEGORIES.join(", ")}.`,
+    );
+  }
+}
+
+function validateFeedbackMessage(message) {
+  assertString(message, "message", { allowEmpty: false });
+
+  const trimmedMessage = message.trim();
+
+  if (trimmedMessage.length > FEEDBACK_MESSAGE_MAX_LENGTH) {
+    throw validationError(
+      "message",
+      `message must be at most ${FEEDBACK_MESSAGE_MAX_LENGTH} characters.`,
+    );
+  }
+
+  return trimmedMessage;
+}
+
+function sanitizeFeedbackContext(context) {
+  if (context === undefined || context === null) {
+    return null;
+  }
+
+  if (typeof context !== "object" || Array.isArray(context)) {
+    throw validationError("context", "context must be an object or null.");
+  }
+
+  const sanitizedContext = {};
+
+  for (const field of FEEDBACK_CONTEXT_FIELDS) {
+    const value = context[field];
+
+    if (value === undefined || value === null || value === "") {
+      continue;
+    }
+
+    if (typeof value !== "string" && typeof value !== "number") {
+      throw validationError(
+        `context.${field}`,
+        `context.${field} must be a string or number.`,
+      );
+    }
+
+    sanitizedContext[field] = String(value).slice(
+      0,
+      FEEDBACK_CONTEXT_VALUE_MAX_LENGTH,
+    );
+  }
+
+  return Object.keys(sanitizedContext).length > 0 ? sanitizedContext : null;
+}
+
+function validateFeedbackPayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw validationError("body", "Request body must be an object.");
+  }
+
+  const category = payload.category ?? "other";
+  validateFeedbackCategory(category);
+
+  return {
+    category,
+    message: validateFeedbackMessage(payload.message),
+    context: sanitizeFeedbackContext(payload.context),
+  };
+}
+
+function validateFeedbackUpdatePayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw validationError("body", "Request body must be an object.");
+  }
+
+  const result = {};
+
+  if ("status" in payload) {
+    assertString(payload.status, "status", { allowEmpty: false });
+
+    if (!FEEDBACK_STATUSES.includes(payload.status)) {
+      throw validationError(
+        "status",
+        `status must be one of ${FEEDBACK_STATUSES.join(", ")}.`,
+      );
+    }
+
+    result.status = payload.status;
+  }
+
+  if ("adminNote" in payload) {
+    assertString(payload.adminNote, "adminNote");
+
+    if (payload.adminNote.length > FEEDBACK_ADMIN_NOTE_MAX_LENGTH) {
+      throw validationError(
+        "adminNote",
+        `adminNote must be at most ${FEEDBACK_ADMIN_NOTE_MAX_LENGTH} characters.`,
+      );
+    }
+
+    result.adminNote = payload.adminNote;
+  }
+
+  if (Object.keys(result).length === 0) {
+    throw validationError("body", "Provide status and/or adminNote.");
+  }
+
+  return result;
+}
+
+function validateFeedbackStatusQuery(status) {
+  if (status === undefined) {
+    return undefined;
+  }
+
+  assertString(status, "status", { allowEmpty: false });
+
+  if (!FEEDBACK_STATUSES.includes(status)) {
+    throw validationError(
+      "status",
+      `status must be one of ${FEEDBACK_STATUSES.join(", ")}.`,
+    );
+  }
+
+  return status;
+}
+
+function validateLimitQuery(limit, options = {}) {
+  const { defaultValue = 50, maxValue = 200 } = options;
+
+  if (limit === undefined) {
+    return defaultValue;
+  }
+
+  const parsedLimit = Number(limit);
+
+  if (!Number.isInteger(parsedLimit) || parsedLimit < 1) {
+    throw validationError("limit", "limit must be a positive integer.");
+  }
+
+  return Math.min(parsedLimit, maxValue);
+}
+
 function validateMonthQuery(month) {
   if (month === undefined) {
     return undefined;
@@ -207,9 +378,15 @@ function validateMonthQuery(month) {
 }
 
 module.exports = {
+  FEEDBACK_CATEGORIES,
+  FEEDBACK_STATUSES,
   validateCreateProfilePayload,
   validateEmployee,
   validateEntryPayload,
+  validateFeedbackPayload,
+  validateFeedbackStatusQuery,
+  validateFeedbackUpdatePayload,
+  validateLimitQuery,
   validateMonthQuery,
   validateProfileUpdatePayload,
   validateSelectedMonth,

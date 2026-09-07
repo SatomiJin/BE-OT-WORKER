@@ -6,16 +6,22 @@ const {
   closeDatabase,
   connectToDatabase,
   createEntry,
+  createFeedback,
   createProfile,
   deleteEntry,
+  deleteFeedback,
   deleteProfile,
   getEntriesByProfileId,
+  getFeedbackById,
+  listFeedback,
+  listFeedbackByAuthUserId,
   getProfileByAuthUserId,
   getProfileByUsername,
   listProfiles,
   listProfilesWithEntries,
   stopTimer,
   updateEntry,
+  updateFeedback,
   updateProfileByAuthUserId,
   updateProfileByUsername,
 } = require("./store");
@@ -37,6 +43,10 @@ const {
 const {
   validateCreateProfilePayload,
   validateEntryPayload,
+  validateFeedbackPayload,
+  validateFeedbackStatusQuery,
+  validateFeedbackUpdatePayload,
+  validateLimitQuery,
   validateMonthQuery,
   validateProfileUpdatePayload,
   validateTimerPayload,
@@ -47,6 +57,9 @@ const port = Number(process.env.PORT || 3000);
 const timeZone = process.env.APP_TIME_ZONE || "Asia/Ho_Chi_Minh";
 const corsOrigin =
   process.env.CORS_ORIGIN || "https://fe-ot-worker.vercel.app";
+// Feedback is addressed to one person, so the inbox routes are gated on this
+// username rather than on the ADMIN role. Change it here to hand the inbox over.
+const FEEDBACK_OWNER_USERNAME = "trong-dong";
 
 function createDefaultProfile(username, authUserId = null, employee = {}) {
   return {
@@ -109,6 +122,26 @@ function normalizeOtProfile(profile) {
     entries: Array.isArray(profile.entries)
       ? profile.entries.map(normalizeEntry)
       : [],
+  };
+}
+
+function normalizeFeedback(feedback) {
+  return {
+    id: feedback.id,
+    username: feedback.username,
+    category: feedback.category,
+    message: feedback.message,
+    context: feedback.context,
+    status: feedback.status,
+    createdAt: feedback.createdAt,
+    updatedAt: feedback.updatedAt,
+  };
+}
+
+function normalizeAdminFeedback(feedback) {
+  return {
+    ...normalizeFeedback(feedback),
+    adminNote: feedback.adminNote,
   };
 }
 
@@ -247,6 +280,20 @@ async function requireCurrentUserProfile(request) {
   return profile;
 }
 
+function isFeedbackOwnerProfile(profile) {
+  return profile?.username === FEEDBACK_OWNER_USERNAME;
+}
+
+async function requireFeedbackOwnerProfile(request) {
+  const profile = await requireCurrentUserProfile(request);
+
+  if (!isFeedbackOwnerProfile(profile)) {
+    throw createHttpError(403, "Feedback inbox is restricted.");
+  }
+
+  return profile;
+}
+
 async function requireAdminProfile(request) {
   const profile = await requireCurrentUserProfile(request);
 
@@ -314,10 +361,40 @@ async function handleRequest(request, response) {
           profile: profile
             ? { username: profile.username, role: profile.role || "USER" }
             : null,
+          canReadFeedback: isFeedbackOwnerProfile(profile),
         },
         corsHeaders,
       );
       return;
+    }
+
+    if (pathname === "/api/feedback") {
+      await handleFeedbackRoutes(request, response, requestUrl, corsHeaders);
+      return;
+    }
+
+    if (pathname === "/api/admin/feedback") {
+      await handleAdminFeedbackListRoute(
+        request,
+        response,
+        requestUrl,
+        corsHeaders,
+      );
+      return;
+    }
+
+    if (pathname.startsWith("/api/admin/feedback/")) {
+      const pathSegments = pathname.split("/").filter(Boolean);
+
+      if (pathSegments.length === 4) {
+        await handleAdminFeedbackItemRoute(
+          request,
+          response,
+          pathSegments[3],
+          corsHeaders,
+        );
+        return;
+      }
     }
 
     if (pathname === "/api/profiles/me") {
@@ -445,6 +522,164 @@ async function handleRequest(request, response) {
 
     sendJson(response, statusCode, payload, corsHeaders);
   }
+}
+
+async function handleFeedbackRoutes(
+  request,
+  response,
+  requestUrl,
+  corsHeaders,
+) {
+  const ownerId = getRequestOwnerId(request);
+
+  if (!ownerId) {
+    throw createHttpError(401, "Token is missing subject claim.");
+  }
+
+  if (request.method === "POST") {
+    const body = await readJsonBody(request);
+    const payload = validateFeedbackPayload(body);
+    // The feedback widget is reachable before a profile exists, so a missing
+    // profile is not an error here - it only leaves the link fields empty.
+    const profile = await getProfileByAuthUserId(ownerId, request.auth);
+    const createdFeedback = await createFeedback(
+      {
+        id: createId("fb"),
+        authUserId: ownerId,
+        profileId: profile?.id ?? null,
+        username: profile?.username ?? payload.context?.username ?? "",
+        category: payload.category,
+        message: payload.message,
+        context: payload.context,
+        status: "NEW",
+      },
+      request.auth,
+    );
+
+    sendJson(
+      response,
+      201,
+      { feedback: normalizeFeedback(createdFeedback) },
+      corsHeaders,
+    );
+    return;
+  }
+
+  if (request.method === "GET") {
+    const limit = validateLimitQuery(
+      requestUrl.searchParams.get("limit") ?? undefined,
+    );
+    const feedbackList = await listFeedbackByAuthUserId(
+      ownerId,
+      request.auth,
+      { limit },
+    );
+
+    sendJson(
+      response,
+      200,
+      { feedback: feedbackList.map(normalizeFeedback) },
+      corsHeaders,
+    );
+    return;
+  }
+
+  methodNotAllowed(response, ["GET", "POST"]);
+}
+
+async function handleAdminFeedbackListRoute(
+  request,
+  response,
+  requestUrl,
+  corsHeaders,
+) {
+  if (request.method !== "GET") {
+    methodNotAllowed(response, ["GET"]);
+    return;
+  }
+
+  await requireFeedbackOwnerProfile(request);
+
+  const status = validateFeedbackStatusQuery(
+    requestUrl.searchParams.get("status") || undefined,
+  );
+  const category = requestUrl.searchParams.get("category") || undefined;
+  const limit = validateLimitQuery(
+    requestUrl.searchParams.get("limit") ?? undefined,
+  );
+  const feedbackList = await listFeedback(request.auth, {
+    status,
+    category,
+    limit,
+  });
+
+  sendJson(
+    response,
+    200,
+    { feedback: feedbackList.map(normalizeAdminFeedback) },
+    corsHeaders,
+  );
+}
+
+async function handleAdminFeedbackItemRoute(
+  request,
+  response,
+  feedbackId,
+  corsHeaders,
+) {
+  await requireFeedbackOwnerProfile(request);
+
+  if (request.method === "GET") {
+    const feedback = await getFeedbackById(feedbackId, request.auth);
+
+    if (!feedback) {
+      throw createHttpError(404, `Feedback ${feedbackId} was not found.`);
+    }
+
+    sendJson(
+      response,
+      200,
+      { feedback: normalizeAdminFeedback(feedback) },
+      corsHeaders,
+    );
+    return;
+  }
+
+  if (request.method === "PUT") {
+    const body = await readJsonBody(request);
+    const updates = validateFeedbackUpdatePayload(body);
+    const updatedFeedback = await updateFeedback(
+      feedbackId,
+      request.auth,
+      updates,
+    );
+
+    if (!updatedFeedback) {
+      throw createHttpError(404, `Feedback ${feedbackId} was not found.`);
+    }
+
+    sendJson(
+      response,
+      200,
+      { feedback: normalizeAdminFeedback(updatedFeedback) },
+      corsHeaders,
+    );
+    return;
+  }
+
+  if (request.method === "DELETE") {
+    const deleted = await deleteFeedback(feedbackId, request.auth);
+
+    if (!deleted) {
+      throw createHttpError(404, `Feedback ${feedbackId} was not found.`);
+    }
+
+    response.writeHead(204, corsHeaders);
+    response.end();
+    return;
+  }
+
+  methodNotAllowed(response, ["GET", "PUT", "DELETE"]);
 }
 
 async function handleCurrentProfileRoutes(request, response, corsHeaders) {
