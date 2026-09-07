@@ -4,8 +4,21 @@
 //
 // Deploy:
 //   supabase functions deploy notify-feedback
-//   supabase secrets set RESEND_API_KEY=... FEEDBACK_ALERT_TO=... FEEDBACK_ALERT_FROM=...
-//   supabase secrets set FEEDBACK_WEBHOOK_SECRET=...
+//
+// Required secrets -- all four, the function fails closed on each:
+//   supabase secrets set RESEND_API_KEY=re_...
+//   supabase secrets set FEEDBACK_ALERT_TO=you@example.com
+//   supabase secrets set 'FEEDBACK_ALERT_FROM=OT Worker <you@verified-domain.com>'
+//   supabase secrets set FEEDBACK_WEBHOOK_SECRET=<same value as in the trigger>
+//
+// FEEDBACK_ALERT_FROM falls back to Resend's sandbox address below, which only
+// delivers to the Resend account owner. For real recipients it must be an
+// address on a domain verified in your Resend account. Quote the value -- the
+// angle brackets are shell redirection operators.
+//
+// Optional: FEEDBACK_APP_URL (button linking back to the app), APP_TIME_ZONE.
+//
+// Secrets take effect on the next invocation; no redeploy needed.
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
 
@@ -179,8 +192,15 @@ Deno.serve(async (request: Request) => {
   if (!mailResponse.ok) {
     const detail = await mailResponse.text();
     console.error("Resend rejected the message", mailResponse.status, detail);
+    // Echo Resend's own reason back. The trigger records this response in
+    // net._http_response, which is the only diagnostic the DB side ever sees;
+    // a generic message there turns an unverified from-domain into a guess.
     return new Response(
-      JSON.stringify({ message: "Could not send the alert email." }),
+      JSON.stringify({
+        message: "Could not send the alert email.",
+        resendStatus: mailResponse.status,
+        resendError: detail.slice(0, 500),
+      }),
       { status: 502, headers: { "Content-Type": "application/json" } },
     );
   }

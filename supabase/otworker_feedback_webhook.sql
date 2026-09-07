@@ -5,12 +5,43 @@
 --   1. supabase/otworker_feedback.sql has been applied.
 --   2. The Edge Function is deployed:
 --        supabase functions deploy notify-feedback
---   3. Its secrets are set:
---        supabase secrets set RESEND_API_KEY=... FEEDBACK_ALERT_TO=you@example.com
+--   3. All FOUR secrets are set. Every one of them is required -- the function
+--      fails closed on each, and the failure is silent from the app's side
+--      because this trigger deliberately swallows errors (see below):
+--        supabase secrets set RESEND_API_KEY=re_...
+--        supabase secrets set FEEDBACK_ALERT_TO=you@example.com
+--        supabase secrets set 'FEEDBACK_ALERT_FROM=OT Worker <you@verified-domain.com>'
 --        supabase secrets set FEEDBACK_WEBHOOK_SECRET=<same value as below>
 --
--- Replace <PROJECT_REF>, <WEBHOOK_SECRET>, and <SUPABASE_ANON_KEY> before
--- running this in the Supabase SQL Editor.
+--      FEEDBACK_ALERT_FROM has a fallback in the function
+--      ("OT Worker <onboarding@resend.dev>"), so it looks optional. It is not:
+--      that sandbox address only delivers to the Resend account owner's own
+--      address, and Resend rejects the send outright when the from-domain is
+--      not verified in YOUR Resend account. Use an address on a domain you
+--      have added DNS records for. Quote the value -- the angle brackets are
+--      redirection operators in PowerShell and bash.
+--
+-- Replace <PROJECT_REF>, <WEBHOOK_SECRET>, and <SUPABASE_ANON_KEY> below
+-- before running this in the Supabase SQL Editor. WEBHOOK_SECRET must match
+-- the FEEDBACK_WEBHOOK_SECRET secret byte for byte; the anon key must be the
+-- real one (Dashboard -> Settings -> API, or `supabase projects api-keys`).
+--
+-- Troubleshooting: this trigger cannot report failures to the caller, so a
+-- broken mail path looks exactly like a working one from the app. pg_net logs
+-- every response instead -- that table is the only place the truth shows up:
+--
+--   select id, status_code, content, error_msg, created
+--   from net._http_response
+--   order by created desc limit 10;
+--
+--   (no rows) -- this file was never applied; run it
+--   401       -- anon_key below is wrong or still a placeholder
+--   403       -- webhook_secret below != FEEDBACK_WEBHOOK_SECRET secret
+--   502       -- Resend refused the send. The reason is NOT in `content`; the
+--                function only console.error()s it. Check Resend Dashboard ->
+--                Emails for the real cause, usually an unverified from-domain
+--                or a bad RESEND_API_KEY.
+--   200       -- sent; if no mail arrives, check the spam folder
 
 create extension if not exists pg_net with schema extensions;
 
