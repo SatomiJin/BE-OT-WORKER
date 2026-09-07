@@ -18,7 +18,7 @@ create or replace function public.notify_otworker_feedback()
 returns trigger
 language plpgsql
 security definer
-set search_path = public, extensions
+set search_path = public, extensions, net
 as $$
 declare
   function_url text := 'https://<PROJECT_REF>.supabase.co/functions/v1/notify-feedback';
@@ -28,20 +28,28 @@ declare
   -- public (the frontend ships it), so it is safe to inline here.
   anon_key text := '<SUPABASE_ANON_KEY>';
 begin
-  perform extensions.http_post(
-    url := function_url,
-    headers := jsonb_build_object(
-      'Content-Type', 'application/json',
-      'Authorization', 'Bearer ' || anon_key,
-      'x-feedback-webhook-secret', webhook_secret
-    ),
-    body := jsonb_build_object(
-      'type', 'INSERT',
-      'table', 'otworker_feedback',
-      'record', to_jsonb(new)
-    ),
-    timeout_milliseconds := 5000
-  );
+  -- An AFTER INSERT trigger still runs inside the caller's transaction, so an
+  -- error raised here would roll back the user's feedback. The mail call is
+  -- best-effort: log any failure and let the insert stand.
+  begin
+    perform net.http_post(
+      url := function_url,
+      headers := jsonb_build_object(
+        'Content-Type', 'application/json',
+        'Authorization', 'Bearer ' || anon_key,
+        'x-feedback-webhook-secret', webhook_secret
+      ),
+      body := jsonb_build_object(
+        'type', 'INSERT',
+        'table', 'otworker_feedback',
+        'record', to_jsonb(new)
+      ),
+      timeout_milliseconds := 5000
+    );
+  exception
+    when others then
+      raise warning 'notify_otworker_feedback failed: % (%)', sqlerrm, sqlstate;
+  end;
 
   return new;
 end;

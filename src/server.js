@@ -516,6 +516,13 @@ async function handleRequest(request, response) {
     notFound(response);
   } catch (error) {
     const statusCode = error.statusCode || 500;
+
+    // Clients only ever see the generic 500 text, so without this the real
+    // database/driver message is lost and the logs show nothing at all.
+    if (statusCode === 500) {
+      console.error("Unhandled request error:", error);
+    }
+
     const payload = {
       message: statusCode === 500 ? "Internal server error." : error.message,
     };
